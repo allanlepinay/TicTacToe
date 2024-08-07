@@ -18,7 +18,6 @@ CREATE TABLE moves (
 CREATE TABLE players (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
-    score INTEGER DEFAULT 0
 );
 
 CREATE TABLE player_games (

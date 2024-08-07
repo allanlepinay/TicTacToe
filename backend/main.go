@@ -7,7 +7,10 @@ import (
     "net/http"
     "strconv"
     "time"
+    "crypto/rand"
+    "encoding/base64"
 
+    "golang.org/x/crypto/bcrypt"
     "github.com/gorilla/mux"
     _ "github.com/lib/pq"
 )
@@ -24,6 +27,16 @@ type Move struct {
     Y      int    `json:"y"`
     Player string `json:"player"`
 }
+
+type Player struct {
+    ID          int64   `json:"id"`
+    Name        string  `json:"name"`
+    Password    string  `json:"password"`
+    Wins        int64   `json:"wins"`
+    Loses       int64   `json:"loses"`
+    Draw        int64   `json:"draw"`
+}
+
 
 type GameStatus int
 const (
@@ -54,6 +67,14 @@ func main() {
     r.HandleFunc("/game/{id}/move", withCORS(func(w http.ResponseWriter, r *http.Request) {
         MakeMove(db, w, r)
     }))
+    r.HandleFunc("/register", withCORS(func(w http.ResponseWriter, r *http.Request) {
+        Register(db, w, r)
+    }))
+    r.HandleFunc("/login", withCORS(func(w http.ResponseWriter, r *http.Request) {
+        Login(db, w, r)
+    }))
+
+
 
     http.ListenAndServe(":8080", r)
 }
@@ -189,6 +210,7 @@ func GetBoard(db *sql.DB, w http.ResponseWriter, r *http.Request) [3][3]string {
     return board
 }
 
+// TODO checkDraw
 func CheckVictory(board [3][3]string) (bool, string) {
     // Check rows
     for _, row := range board {
@@ -221,3 +243,71 @@ func UpdateGameStatus(db *sql.DB, gameId int64, status GameStatus) error {
     return nil
 }
 
+func hashPassword(password string) (string, error) {
+    hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+    return string(hashedPassword), err
+}
+
+func checkPasswordHash(password, hash string) bool {
+    err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+    return err == nil
+}
+
+func Register(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+    var player Player
+    if err := json.NewDecoder(r.Body).Decode(&player); err != nil {
+        http.Error(w, "Invalid request body", http.StatusBadRequest)
+        return
+    }
+
+    hashedPassword, err := hashPassword(player.Password)
+    if err != nil {
+        http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+        return
+    }
+
+    _, err = db.Exec("INSERT INTO players (name, password_hash) VALUES ($1, $2)", player.Name, hashedPassword)
+    if err != nil {
+        fmt.Println(err)
+        http.Error(w, "Failed to register player", http.StatusInternalServerError)
+        return
+    }
+
+    w.WriteHeader(http.StatusOK)
+}
+
+func Login(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+    var player Player
+
+    if err := json.NewDecoder(r.Body).Decode(&player); err != nil {
+        http.Error(w, "Invalid request body", http.StatusBadRequest)
+        return
+    }
+
+    var storedHash string
+    err := db.QueryRow("SELECT password_hash FROM players WHERE name = $1 LIMIT 1", player.Name).Scan(&storedHash)
+    if err != nil {
+        http.Error(w, "Invalid name or password", http.StatusUnauthorized)
+        return
+    }
+
+    if !checkPasswordHash(player.Password, storedHash) {
+        http.Error(w, "Invalid name or password", http.StatusUnauthorized)
+        return
+    }
+
+    sessionToken := generateSessionToken()
+    w.Header().Set("Content-Type", "application/json")
+    
+    json.NewEncoder(w).Encode(map[string]string{"token": sessionToken})
+}
+
+func generateSessionToken() string {
+    b := make([]byte, 32)
+    _, err := rand.Read(b)
+    if err != nil {
+        panic("Failed to generate session token")
+    }
+
+    return base64.URLEncoding.EncodeToString(b)
+}
