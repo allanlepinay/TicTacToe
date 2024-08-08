@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import '../axiosConfig';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 
@@ -11,7 +12,7 @@ function RegisterPage() {
   const handleRegister = async (e) => {
     e.preventDefault();
 
-    axios.post(`${process.env.REACT_APP_API_URL}/register`, { name: name, password: password })
+    axios.post('/register', { name: name, password: password })
     .then(response => {
       console.log('Register successful:', response.data);
       navigate("/login")

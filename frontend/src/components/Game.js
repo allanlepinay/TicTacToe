@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import Board from './Board';
+import '../axiosConfig';
 import axios from 'axios';
 
 function Game() {
@@ -11,7 +12,7 @@ function Game() {
 
     useEffect(() => {
         // Fetch initial game state from the backend
-        axios.post(`${process.env.REACT_APP_API_URL}/game`)
+        axios.post('/game')
             .then(response => {
                 setGameId(response.data.id);
                 setBoard(response.data.board);
@@ -25,7 +26,7 @@ function Game() {
     const handleClick = (i, j) => {
         if (board[i][j] !== '' || gameOver) return; // Prevent clicking on filled cells or after game over
 
-        axios.post(`${process.env.REACT_APP_API_URL}/game/${gameId}/move`, { x: i, y: j, player: turn })
+        axios.post(`/game/${gameId}/move`, { x: i, y: j, player: turn })
             .then(response => {
                 setBoard(response.data.board);
                 setTurn(response.data.turn);

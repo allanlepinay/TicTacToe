@@ -7,9 +7,12 @@ import (
     "net/http"
     "strconv"
     "time"
-    "crypto/rand"
-    "encoding/base64"
+    "errors"
+    "context"
+    "strings"
 
+    "github.com/spf13/viper"
+    "github.com/dgrijalva/jwt-go"
     "golang.org/x/crypto/bcrypt"
     "github.com/gorilla/mux"
     _ "github.com/lib/pq"
@@ -37,6 +40,10 @@ type Player struct {
     Draw        int64   `json:"draw"`
 }
 
+type TokenResponse struct {
+    AccessToken  string `json:"access_token"`
+    RefreshToken string `json:"refresh_token"`
+}
 
 type GameStatus int
 const (
@@ -51,8 +58,14 @@ var statusName = map[GameStatus]string{
 }
 
 func main() {
+    // .env load
+    viper.SetConfigFile(".env")
+    err := viper.ReadInConfig()
+    if err != nil {
+            panic(err)
+    }
     // TODO clean
-    connStr := "user=postgres password=postgres dbname=tictactoe sslmode=disable"
+    connStr := viper.GetString("DATABASE_CONN_STRING")
     db, err := sql.Open("postgres", connStr)
     if err != nil {
         fmt.Println("Error connecting to the database:", err)
@@ -61,20 +74,25 @@ func main() {
     defer db.Close()
 
     r := mux.NewRouter()
-    r.HandleFunc("/game", withCORS(func(w http.ResponseWriter, r *http.Request) {
-        CreateGame(db, w, r)
-    }))
-    r.HandleFunc("/game/{id}/move", withCORS(func(w http.ResponseWriter, r *http.Request) {
-        MakeMove(db, w, r)
-    }))
+    // Not protected route
     r.HandleFunc("/register", withCORS(func(w http.ResponseWriter, r *http.Request) {
         Register(db, w, r)
     }))
     r.HandleFunc("/login", withCORS(func(w http.ResponseWriter, r *http.Request) {
         Login(db, w, r)
     }))
-
-
+    r.HandleFunc("/refresh-token", withCORS(RefreshTokenHandler))
+    // Protected route
+    r.HandleFunc("/game", withCORS(Authenticate(func(w http.ResponseWriter, r *http.Request) {
+        CreateGame(db, w, r)
+    })))
+    r.HandleFunc("/game/{id}/move", withCORS(Authenticate(func(w http.ResponseWriter, r *http.Request) {
+        MakeMove(db, w, r)
+    })))
+    r.HandleFunc("/verify-token", withCORS(Authenticate(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]string{"status": "valid"})
+    })))
 
     http.ListenAndServe(":8080", r)
 }
@@ -296,18 +314,139 @@ func Login(db *sql.DB, w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    sessionToken := generateSessionToken()
-    w.Header().Set("Content-Type", "application/json")
-    
-    json.NewEncoder(w).Encode(map[string]string{"token": sessionToken})
-}
-
-func generateSessionToken() string {
-    b := make([]byte, 32)
-    _, err := rand.Read(b)
+    // Generate access and refresh tokens
+    accessToken, err := GenerateAccessToken(player.Name)
     if err != nil {
-        panic("Failed to generate session token")
+        http.Error(w, "Failed to generate access token", http.StatusInternalServerError)
+        return
     }
 
-    return base64.URLEncoding.EncodeToString(b)
+    refreshToken, err := GenerateRefreshToken(player.Name)
+    if err != nil {
+        http.Error(w, "Failed to generate refresh token", http.StatusInternalServerError)
+        return
+    }
+
+    // Respond with both tokens
+    response := TokenResponse{
+        AccessToken:  accessToken,
+        RefreshToken: refreshToken,
+    }
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
+}
+
+func GenerateAccessToken(username string) (string, error) {
+    claims := jwt.MapClaims{
+        "username": username,
+        "exp":      time.Now().Add(time.Minute * 1).Unix(), // Short-lived access token
+    }
+
+    token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+    jwtKey := []byte(viper.GetString("JWT_SECRET_KEY"))
+    signedToken, err := token.SignedString(jwtKey)
+    if err != nil {
+        return "", err
+    }
+
+    return signedToken, nil
+}
+
+// Generate a new refresh token
+func GenerateRefreshToken(username string) (string, error) {
+    claims := jwt.MapClaims{
+        "username": username,
+        "exp":      time.Now().Add(time.Hour * 5).Unix(), // Long-lived refresh token
+    }
+
+    token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+    jwtKey := []byte(viper.GetString("JWT_SECRET_KEY"))
+    signedToken, err := token.SignedString(jwtKey)
+    if err != nil {
+        return "", err
+    }
+
+    return signedToken, nil
+}
+
+// Validate JWT token
+func ValidateToken(tokenStr string) (*jwt.Token, error) {
+    token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+        if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+            return nil, errors.New("unexpected signing method")
+        }
+        return []byte(viper.GetString("JWT_SECRET_KEY")), nil
+    })
+
+    if err != nil {
+        return nil, err
+    }
+
+    if !token.Valid {
+        return nil, errors.New("invalid token")
+    }
+
+    return token, nil
+}
+
+// Authenticate middleware
+func Authenticate(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        tokenString := r.Header.Get("Authorization")
+        if tokenString == "" {
+            http.Error(w, "Missing token", http.StatusUnauthorized)
+            return
+        }
+
+        if strings.HasPrefix(tokenString, "Bearer ") {
+            tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+        }
+        
+        token, err := ValidateToken(tokenString)
+        if err != nil {
+            http.Error(w, "Invalid token", http.StatusUnauthorized)
+            return
+        }
+
+        ctx := context.WithValue(r.Context(), "user", token.Claims.(jwt.MapClaims)["username"])
+        next.ServeHTTP(w, r.WithContext(ctx))
+    }
+}
+
+// Handle token refresh
+func RefreshTokenHandler(w http.ResponseWriter, r *http.Request) {
+    var request map[string]string
+    if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+        http.Error(w, "Invalid request body", http.StatusBadRequest)
+        return
+    }
+
+    refreshTokenStr, ok := request["refresh_token"]
+    if !ok {
+        http.Error(w, "Missing refresh token", http.StatusBadRequest)
+        return
+    }
+
+    token, err := ValidateToken(refreshTokenStr)
+    if err != nil {
+        http.Error(w, "Invalid refresh token", http.StatusUnauthorized)
+        return
+    }
+
+    username := token.Claims.(jwt.MapClaims)["username"].(string)
+
+    // Generate new tokens
+    accessToken, err := GenerateAccessToken(username)
+    if err != nil {
+        http.Error(w, "Failed to generate access token", http.StatusInternalServerError)
+        return
+    }
+
+    // Respond with new tokens
+    response := TokenResponse{
+        AccessToken:  accessToken,
+        RefreshToken: refreshTokenStr,
+    }
+    w.Header().Set("Content-Type", "application/json")
+    json.NewEncoder(w).Encode(response)
 }
