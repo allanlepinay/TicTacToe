@@ -136,6 +136,11 @@ func SearchGame(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case opponent := <-waitingPlayers:
+		if username == opponent {
+			removeFromQueue(username)
+			http.Error(w, "Can't play with oneself", http.StatusInternalServerError)
+			return
+		}
 		// Found an opponent, create a new game
 		game, err := createNewGame(db, username, opponent)
 		if err != nil {
@@ -159,6 +164,15 @@ func LeaveQueue(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Username is required", http.StatusBadRequest)
 		return
 	}
+
+	removeFromQueue(username)
+
+	// Inform the client that they've been removed from the queue
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "removed from queue"})
+}
+
+func removeFromQueue(username string) {
 	mutex.Lock()
 	defer mutex.Unlock()
 
@@ -176,10 +190,6 @@ func LeaveQueue(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 
 	// Replace the waitingPlayers channel with the temp channel
 	waitingPlayers = tempChannel
-
-	// Inform the client that they've been removed from the queue
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "removed from queue"})
 }
 
 func UpdateGameBoard(db *sql.DB, w http.ResponseWriter, r *http.Request) {
