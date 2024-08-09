@@ -63,6 +63,10 @@ var statusName = map[GameStatus]string{
 	StatusTerminated: "Terminated",
 }
 
+var leaveQueueMessage struct {
+	Username string `json:"username"`
+}
+
 var waitingPlayers = make(chan string, 100)
 var mutex = &sync.Mutex{}
 
@@ -136,9 +140,12 @@ func SearchGame(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case opponent := <-waitingPlayers:
+		// todo probably not the best way
 		if username == opponent {
 			removeFromQueue(username)
 			http.Error(w, "Can't play with oneself", http.StatusInternalServerError)
+			// TODO display waiting again
+			// json.NewEncoder(w).Encode(map[string]string{"status": "waiting"})
 			return
 		}
 		// Found an opponent, create a new game
@@ -159,13 +166,18 @@ func SearchGame(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 }
 
 func LeaveQueue(db *sql.DB, w http.ResponseWriter, r *http.Request) {
-	username := r.URL.Query().Get("username")
-	if username == "" {
+	err := json.NewDecoder(r.Body).Decode(&leaveQueueMessage)
+	if err != nil {
+		http.Error(w, "Invalid request leaveQueueMessage", http.StatusBadRequest)
+		return
+	}
+
+	if leaveQueueMessage.Username == "" {
 		http.Error(w, "Username is required", http.StatusBadRequest)
 		return
 	}
 
-	removeFromQueue(username)
+	removeFromQueue(leaveQueueMessage.Username)
 
 	// Inform the client that they've been removed from the queue
 	w.WriteHeader(http.StatusOK)

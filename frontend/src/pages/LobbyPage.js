@@ -14,9 +14,6 @@ const LobbyPage = () => {
     const searchGame = async () => {
       try {
         const response = await axios.get('/search-game', {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('accessToken')}`
-          },
           params: {
             // todo this have to be changed when user check will be refractor
             username: localStorage.getItem('username')

@@ -1,28 +1,30 @@
 import React from 'react';
+import '../axiosConfig';
 import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
+
 
 const LeaveQueueButton = () => {
-  const handleLeaveQueue = async () => {
+  const navigate = useNavigate();
+
+  const handleLeaveQueue = () => {
       const username = localStorage.getItem('username');
       if (!username || username == "") {
         console.error('Username not found in local storage');
         return;
       }
-      // Todo, probable probleme de synchronisite
       // todo add token refresh if clicked ?
-      await axios.post('/leave-queue', {           
-        params: {
-        // todo this have to be changed when user check will be refractor
-        username: username
-      }
-    })
-    .then(response => {
-      console.log('Successfully left the queue:', response.data);
-    })
-    .catch(error => {
-      console.error('Error leaving the queue:', error);
-    });        
-
+      axios.post('/leave-queue', {
+        username: localStorage.getItem('username')
+      })
+      .then(response => {
+        navigate("/");
+        window.location.reload();
+        console.log('Successfully left the queue:', response.data);
+      })
+      .catch(error => {
+        console.error('Error leaving the queue:', error);
+      });        
   };
 
   return (
