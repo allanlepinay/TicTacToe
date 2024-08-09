@@ -17,7 +17,9 @@ function LoginPage() {
       const { access_token, refresh_token } = response.data;
       localStorage.setItem('token', access_token);
       localStorage.setItem('refresh_token', refresh_token);
-      navigate("/game");
+      // todo probably not the best thing to send to check who is the user
+      localStorage.setItem('username', name);
+      navigate("/lobby");
       window.location.reload();
     })
     .catch(error => {

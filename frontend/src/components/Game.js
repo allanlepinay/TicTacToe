@@ -12,11 +12,16 @@ function Game() {
 
     useEffect(() => {
         // Fetch initial game state from the backend
-        axios.post('/game')
+        const gameId = window.location.pathname.split('/').pop();
+        axios.post(`/game/${gameId}`)
             .then(response => {
                 setGameId(response.data.id);
                 setBoard(response.data.board);
                 setTurn(response.data.turn);
+                if (response.data.status === 2) { // StatusTerminated
+                    setGameOver(true);
+                    setWinner(response.data.turn);
+                }
             })
             .catch(error => {
                 console.error('Error fetching game state:', error);
@@ -26,7 +31,7 @@ function Game() {
     const handleClick = (i, j) => {
         if (board[i][j] !== '' || gameOver) return; // Prevent clicking on filled cells or after game over
 
-        axios.post(`/game/${gameId}/move`, { x: i, y: j, player: turn })
+        axios.post(`/game/${gameId}/move`, { x: i, y: j, username: localStorage.getItem('username') })
             .then(response => {
                 setBoard(response.data.board);
                 setTurn(response.data.turn);

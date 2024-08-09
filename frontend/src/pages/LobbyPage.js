@@ -2,77 +2,53 @@ import React, { useState, useEffect } from 'react';
 import '../axiosConfig';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
+import LogoutButton from '../components/LogoutButton';
+import LeaveQueueButton from '../components/LeaveQueueButton';
 
-function LobbyPage() {
-  const [games, setGames] = useState([]);
-  const [playerName, setPlayerName] = useState('');
+const LobbyPage = () => {
+  const [status, setStatus] = useState('');
+  const [game, setGame] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Récupère les parties disponibles
-    const fetchAvailableGames = async () => {
+    const searchGame = async () => {
       try {
-        const response = await axios.get('/available-games');
-        setGames(response.data);
+        const response = await axios.get('/search-game', {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('accessToken')}`
+          },
+          params: {
+            // todo this have to be changed when user check will be refractor
+            username: localStorage.getItem('username')
+          }
+        });
+        if (response.data.status === 'waiting') {
+          setStatus('Waiting for an opponent...');
+        } else {
+          setGame(response.data);
+        }
       } catch (error) {
-        console.error('Error fetching available games:', error);
+        console.error('Error searching for game:', error);
       }
     };
 
-    fetchAvailableGames();
-    // Rafraîchit les parties disponibles toutes les 10 secondes
-    const intervalId = setInterval(fetchAvailableGames, 10000);
-
-    return () => clearInterval(intervalId);
+    searchGame();
   }, []);
 
-  const handleCreateGame = async () => {
-    try {
-      const response = await axios.post('/create-game', { playerX: playerName });
-      const gameId = response.data.gameId;
-      localStorage.setItem('gameId', gameId);
-      navigate('/game');
-    } catch (error) {
-      console.error('Error creating game:', error);
+  useEffect(() => {
+    if (game) {
+      navigate(`/game/${game.id}`);
     }
-  };
-
-  const handleJoinGame = async (gameId) => {
-    try {
-      await axios.post('/join-game', { gameId, playerY: playerName });
-      localStorage.setItem('gameId', gameId);
-      navigate('/game');
-    } catch (error) {
-      console.error('Error joining game:', error);
-    }
-  };
+  }, [game, navigate]);
 
   return (
     <div>
       <h1>Lobby</h1>
-      <div>
-        <label>
-          Your Name:
-          <input
-            type="text"
-            value={playerName}
-            onChange={(e) => setPlayerName(e.target.value)}
-            required
-          />
-        </label>
-      </div>
-      <button onClick={handleCreateGame}>Create Game</button>
-      <h2>Available Games</h2>
-      <ul>
-        {games.map(game => (
-          <li key={game.id}>
-            Game ID: {game.id}
-            <button onClick={() => handleJoinGame(game.id)}>Join Game</button>
-          </li>
-        ))}
-      </ul>
+      {status && <p>{status}</p>}
+      <LeaveQueueButton />
+      <LogoutButton />
     </div>
   );
-}
+};
 
 export default LobbyPage;

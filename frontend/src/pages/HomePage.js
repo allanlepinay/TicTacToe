@@ -8,7 +8,12 @@ function HomePage() {
     <div>
         <h1>Welcome to Tic Tac Toe</h1>
         <div>
-            <Link to="/login">Login</Link>
+            <div>
+              <Link to="/login">Login</Link>
+            </div>
+            <div>
+              <Link to="/register">Register</Link>
+            </div>
         </div>
         <LogoutButton />
     </div>
