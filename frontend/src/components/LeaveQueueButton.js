@@ -9,7 +9,7 @@ const LeaveQueueButton = () => {
 
   const handleLeaveQueue = () => {
       const username = localStorage.getItem('username');
-      if (!username || username == "") {
+      if (!username || username === "") {
         console.error('Username not found in local storage');
         return;
       }

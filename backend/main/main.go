@@ -14,9 +14,16 @@ import (
 	"github.com/allanlepinay/TicTacToe/backend/types"
 	"github.com/allanlepinay/TicTacToe/backend/utils"
 	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
 	"github.com/spf13/viper"
 )
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
 
 var leaveQueueMessage struct {
 	Username string `json:"username"`
@@ -24,6 +31,14 @@ var leaveQueueMessage struct {
 
 var waitingPlayers = make(chan string, 100)
 var mutex = &sync.Mutex{}
+
+type Client struct {
+	conn     *websocket.Conn
+	username string
+	gameID   int64
+}
+
+var clients = make(map[*websocket.Conn]*Client)
 
 func main() {
 	// .env load
@@ -54,19 +69,28 @@ func main() {
 	r.HandleFunc("/game/{id}", auth.WithCORS(auth.Authenticate(func(w http.ResponseWriter, r *http.Request) {
 		UpdateGameBoard(db, w, r)
 	})))
-	r.HandleFunc("/game/{id}/move", auth.WithCORS(auth.Authenticate(func(w http.ResponseWriter, r *http.Request) {
-		database.MakeMove(db, w, r)
-	})))
 	r.HandleFunc("/verify-token", auth.WithCORS(auth.Authenticate(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "valid"})
 	})))
-	r.HandleFunc("/search-game", auth.WithCORS(auth.Authenticate(func(w http.ResponseWriter, r *http.Request) {
-		SearchGame(db, w, r)
-	})))
 	r.HandleFunc("/leave-queue", auth.WithCORS(auth.Authenticate(func(w http.ResponseWriter, r *http.Request) {
 		LeaveQueue(db, w, r)
 	})))
+	r.HandleFunc("/ws", auth.WithCORS(func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			http.Error(w, "Missing token", http.StatusUnauthorized)
+			return
+		}
+
+		_, err := auth.ValidateToken(token)
+		if err != nil {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		handleWebSocket(db, w, r)
+	}))
 
 	http.ListenAndServe(":8080", r)
 }
@@ -136,40 +160,6 @@ func Login(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-func SearchGame(db *sql.DB, w http.ResponseWriter, r *http.Request) {
-	username := r.URL.Query().Get("username")
-	if username == "" {
-		http.Error(w, "Username is required", http.StatusBadRequest)
-		return
-	}
-
-	select {
-	case opponent := <-waitingPlayers:
-		// todo probably not the best way
-		if username == opponent {
-			removeFromQueue(username)
-			http.Error(w, "Can't play with oneself", http.StatusInternalServerError)
-			// TODO display waiting again
-			// json.NewEncoder(w).Encode(map[string]string{"status": "waiting"})
-			return
-		}
-		// Found an opponent, create a new game
-		game, err := database.CreateNewGame(db, username, opponent)
-		if err != nil {
-			http.Error(w, "Failed to create game", http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(game)
-	default:
-		// No opponent found, add self to waiting list
-		mutex.Lock()
-		defer mutex.Unlock()
-		waitingPlayers <- username
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"status": "waiting"})
-	}
-}
-
 func LeaveQueue(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	err := json.NewDecoder(r.Body).Decode(&leaveQueueMessage)
 	if err != nil {
@@ -214,7 +204,7 @@ func UpdateGameBoard(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	gameId := vars["id"]
 	gameIdInt, _ := strconv.ParseInt(gameId, 0, 64)
 
-	board := database.GetBoard(db, w, r)
+	board := database.GetBoard(db, types.Move{})
 	if board == [3][3]string{} {
 		board = [3][3]string{
 			{"", "", ""},
@@ -244,4 +234,139 @@ func UpdateGameBoard(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(game)
+}
+
+func handleWebSocket(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer conn.Close()
+
+	client := &Client{
+		conn:     conn,
+		username: "",
+		gameID:   -1,
+	}
+	if _, ok := clients[conn]; !ok {
+		clients[conn] = client
+	}
+
+	for {
+		// Read client message
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			delete(clients, conn)
+			break
+		}
+
+		var message types.Move
+		if err := json.Unmarshal(msg, &message); err != nil {
+			fmt.Println("Error unmarshaling message:", err)
+			continue
+		}
+
+		switch message.Type {
+		case "JoinQueue":
+			clients[conn].username = message.Username
+			client = clients[conn]
+			if client.username == "" {
+				client.conn.WriteJSON(types.WebsocketMessage{
+					Type:     "error",
+					Message:  "No username found",
+					Username: "",
+					GameId:   -1})
+				return
+			}
+			database.StorePlayerWebsocketConn(db, message.Username, conn)
+
+			waitingPlayers <- client.username
+			select {
+			case player1 := <-waitingPlayers:
+				select {
+				case player2 := <-waitingPlayers:
+					if player1 != player2 {
+						game, err := database.CreateNewGame(db, player1, player2)
+						if err != nil {
+							fmt.Println("Failed to create game:", err)
+							continue
+						}
+						// Update clients with new game information (only concerned clients)
+						for _, c := range clients {
+							if c.username == player1 || c.username == player2 {
+								c.gameID = game.ID
+								c.conn.WriteJSON(types.WebsocketMessage{
+									Type:     "gameCreated",
+									Message:  "",
+									Username: "",
+									GameId:   game.ID})
+							}
+						}
+					} else {
+						// Can't play with oneself
+						waitingPlayers <- player1
+						client.conn.WriteJSON(types.WebsocketMessage{
+							Type:     "waiting",
+							Message:  "Can't play with oneself",
+							Username: "",
+							GameId:   -1})
+					}
+				default:
+					// No second player yet
+					waitingPlayers <- player1
+					client.conn.WriteJSON(types.WebsocketMessage{
+						Type:     "waiting",
+						Message:  "",
+						Username: "",
+						GameId:   -1})
+				}
+			default:
+				client.conn.WriteJSON(types.WebsocketMessage{
+					Type:     "waiting",
+					Message:  "",
+					Username: "",
+					GameId:   -1})
+			}
+		case "ping":
+			client.conn.WriteJSON(types.WebsocketMessage{
+				Type:     "message",
+				Message:  "pong",
+				Username: "",
+				GameId:   0})
+		case "move":
+			database.StorePlayerWebsocketConn(db, message.Username, conn)
+
+			if message.GameId != -1 && message.GameId != 0 {
+				var move types.Move
+				moveData, err := json.Marshal(message)
+				if err != nil {
+					fmt.Println("Error marshalling move:", err)
+					continue
+				}
+				err = json.Unmarshal(moveData, &move)
+				if err != nil {
+					fmt.Println("Error unmarshalling move:", err)
+					continue
+				}
+				game := database.MakeMove(db, move)
+
+				players, _ := database.GetPlayersByGameId(db, move.GameId)
+
+				// Send game to players (only concerned players)
+				for _, player := range players {
+					for _, client := range clients {
+						if player.WebsocketConn == client.conn.RemoteAddr().String() {
+							gameJSON, _ := json.Marshal(game)
+							client.conn.WriteJSON(types.WebsocketMessage{
+								Type:     "move",
+								Message:  string(gameJSON),
+								Username: client.username,
+								GameId:   client.gameID})
+						}
+					}
+				}
+			}
+		}
+	}
 }

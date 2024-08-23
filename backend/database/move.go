@@ -2,32 +2,24 @@ package database
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"strconv"
 
 	gamerules "github.com/allanlepinay/TicTacToe/backend/gameRules"
 	"github.com/allanlepinay/TicTacToe/backend/types"
-	"github.com/gorilla/mux"
 )
 
-func GetBoard(db *sql.DB, w http.ResponseWriter, r *http.Request) [3][3]string {
-	vars := mux.Vars(r)
-	gameId := vars["id"]
+func GetBoard(db *sql.DB, move types.Move) [3][3]string {
 	var moves []types.Move
-	res, err := db.Query("SELECT x, y, player FROM moves WHERE game_id = $1", gameId)
+	res, err := db.Query("SELECT x, y, player FROM moves WHERE game_id = $1", move.GameId)
 	if err != nil {
 		fmt.Println(err)
-		http.Error(w, "Moves not found", http.StatusNotFound)
 		return [3][3]string{}
 	}
 	for res.Next() {
 		var move types.Move
-		err = res.Scan(&move.X, &move.Y, &move.Player)
+		err = res.Scan(&move.X, &move.Y, &move.Turn)
 		if err != nil {
 			fmt.Println(err)
-			http.Error(w, "Failed to scan move", http.StatusInternalServerError)
 			return [3][3]string{}
 		}
 		moves = append(moves, move)
@@ -35,57 +27,55 @@ func GetBoard(db *sql.DB, w http.ResponseWriter, r *http.Request) [3][3]string {
 
 	var board = [3][3]string{}
 	for _, move := range moves {
-		board[move.X][move.Y] = move.Player
+		board[move.X][move.Y] = move.Turn
 	}
 
 	return board
 }
 
-func MakeMove(db *sql.DB, w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	gameId := vars["id"]
-	gameIdInt, _ := strconv.ParseInt(gameId, 0, 64)
-
-	move := types.Move{}
-	err := json.NewDecoder(r.Body).Decode(&move)
-	if err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
+func MakeMove(db *sql.DB, move types.Move) types.Game {
 	player, _ := GetPlayerByName(db, move.Username)
+	board := GetBoard(db, move)
 
-	gameDb, err := GetGame(db, gameIdInt)
+	gameDb, err := GetGame(db, int64(move.GameId))
 	if err != nil {
-		fmt.Println(err)
-		http.Error(w, "Failed to get game", http.StatusInternalServerError)
-		return
+		fmt.Println("move.go-MakeMove-GetGame-", err)
+		return types.Game{}
 	}
 
 	if (gameDb.Turn == "X" && gameDb.PlayerXId != player.ID) || (gameDb.Turn == "O" && gameDb.PlayerOId != player.ID) {
-		http.Error(w, "It's not your turn", http.StatusForbidden)
-		return
+		return types.Game{
+			ID:     int64(move.GameId),
+			Board:  board,
+			Turn:   gameDb.Turn,
+			Status: types.StatusInProgress,
+		}
+
 	}
 
-	_, err = db.Exec("INSERT INTO moves (game_id, player, x, y) VALUES ($1, $2, $3, $4)", gameId, gameDb.Turn, move.X, move.Y)
+	_, err = db.Exec("INSERT INTO moves (game_id, player, x, y) VALUES ($1, $2, $3, $4)", move.GameId, gameDb.Turn, move.X, move.Y)
 	if err != nil {
-		fmt.Println(err)
-		http.Error(w, "Failed to make move", http.StatusInternalServerError)
-		return
+		fmt.Println("move.go-MakeMove-INSERT", err)
+		return types.Game{
+			ID:     int64(move.GameId),
+			Board:  board,
+			Turn:   gameDb.Turn,
+			Status: types.StatusInProgress,
+		}
 	}
 
-	board := GetBoard(db, w, r)
+	board = GetBoard(db, move)
 	victory, _ := gamerules.CheckVictory(board)
 
 	var game types.Game
 	if victory {
 		game = types.Game{
-			ID:     gameIdInt,
+			ID:     int64(move.GameId),
 			Board:  board,
 			Turn:   gameDb.Turn,
 			Status: types.StatusTerminated,
 		}
-		UpdateGameStatus(db, gameIdInt, types.StatusTerminated)
+		UpdateGameStatus(db, int64(move.GameId), types.StatusTerminated)
 	} else {
 		var turn string
 
@@ -96,15 +86,15 @@ func MakeMove(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 		}
 
 		game = types.Game{
-			ID:     gameIdInt,
+			ID:     int64(move.GameId),
 			Board:  board,
 			Turn:   turn,
 			Status: types.StatusInProgress,
 		}
-		UpdateGameTurn(db, gameIdInt)
+		UpdateGameTurn(db, int64(move.GameId))
 		// TODO don't really want to update everytime
-		UpdateGameStatus(db, gameIdInt, types.StatusInProgress)
+		UpdateGameStatus(db, int64(move.GameId), types.StatusInProgress)
 	}
 
-	json.NewEncoder(w).Encode(game)
+	return game
 }

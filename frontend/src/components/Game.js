@@ -1,48 +1,77 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Board from './Board';
-import '../axiosConfig';
-import axios from 'axios';
+import { useSelector } from 'react-redux';
 
 function Game() {
     const [board, setBoard] = useState([['', '', ''], ['', '', ''], ['', '', '']]);
     const [turn, setTurn] = useState('X');
-    const [gameId, setGameId] = useState(null);
     const [gameOver, setGameOver] = useState(false);
     const [winner, setWinner] = useState('');
+    const [wsStatus, setWsStatus] = useState('Disconnected');
+    const socket = useSelector((state) => state.websocket.connection);
+    const [gameId, setGameId] = useState(window.location.pathname.split('/').pop());
 
     useEffect(() => {
-        // Fetch initial game state from the backend
-        const gameId = window.location.pathname.split('/').pop();
-        axios.post(`/game/${gameId}`)
-            .then(response => {
-                setGameId(response.data.id);
-                setBoard(response.data.board);
-                setTurn(response.data.turn);
-                if (response.data.status === 2) { // StatusTerminated
+        if (socket) {
+          setWsStatus('Connected');
+          const username = localStorage.getItem('username');
+          socket.send(JSON.stringify({
+            type: "JoinGame",
+            message: "JoinGame",
+            gameId: parseInt(gameId),
+            username: username
+          }));
+    
+          socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            handleWebSocketMessage(data);
+          };
+    
+          socket.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            setWsStatus('Error');
+          };
+    
+          socket.onclose = () => {
+            console.log('WebSocket connection closed');
+            setWsStatus('Disconnected');
+          };
+        }
+      }, [socket, gameId]);
+
+    const handleWebSocketMessage = (data) => {
+        switch (data.type) {
+            case 'move':
+                var game = JSON.parse(data.message);
+                setBoard(game['board']);
+                if (game['status'] == 2) { // Status Terminated
                     setGameOver(true);
-                    setWinner(response.data.turn);
+                    setWinner(turn)
+                } else {
+                    setTurn(game['turn']);
                 }
-            })
-            .catch(error => {
-                console.error('Error fetching game state:', error);
-            });
-    }, []);
+                break;
+            default:
+                console.log('Unknown message type:', data.type);
+        }
+    };
 
     const handleClick = (i, j) => {
-        if (board[i][j] !== '' || gameOver) return; // Prevent clicking on filled cells or after game over
+        if (board[i][j] !== '' || gameOver) return;
 
-        axios.post(`/game/${gameId}/move`, { x: i, y: j, username: localStorage.getItem('username') })
-            .then(response => {
-                setBoard(response.data.board);
-                setTurn(response.data.turn);
-                if (response.data.status === 2) { // StatusTerminated
-                    setGameOver(true);
-                    setWinner(response.data.turn);
-                }
-            })
-            .catch(error => {
-                console.error('Error making move:', error);
-            });        
+        const move = { 
+            type: 'move',
+            x: i, 
+            y: j, 
+            gameId: parseInt(gameId),
+            username: localStorage.getItem('username'),
+            turn: turn
+        };
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify(move));
+        } else {
+            console.error('WebSocket is not connected');
+        }
     };
 
     return (
@@ -50,6 +79,7 @@ function Game() {
             <Board board={board} onClick={handleClick} />
             <div>Current Turn: {turn}</div>
             {gameOver && <div>{winner} has won!</div>}
+            <div>WebSocket Status: {wsStatus}</div>
         </div>
     );
 }

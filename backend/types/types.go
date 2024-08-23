@@ -10,19 +10,27 @@ type Game struct {
 }
 
 type Move struct {
-	X        int    `json:"x"`
-	Y        int    `json:"y"`
-	Player   string `json:"player"`
+	WebsocketMessage
+	X    int    `json:"x"`
+	Y    int    `json:"y"`
+	Turn string `json:"turn"`
+}
+
+type WebsocketMessage struct {
+	Type     string `json:"type"`
+	Message  string `json:"message"`
 	Username string `json:"username"`
+	GameId   int64  `json:"gameId"`
 }
 
 type Player struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	Password string `json:"password"`
-	Wins     int64  `json:"wins"`
-	Loses    int64  `json:"loses"`
-	Draw     int64  `json:"draw"`
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	Password      string `json:"password"`
+	Wins          int64  `json:"wins"`
+	Loses         int64  `json:"loses"`
+	Draw          int64  `json:"draw"`
+	WebsocketConn string `json:"websocket_conn"`
 }
 
 type TokenResponse struct {
