@@ -33,12 +33,12 @@ var waitingPlayers = make(chan string, 100)
 var mutex = &sync.Mutex{}
 
 type Client struct {
-	conn     *websocket.Conn
-	username string
-	gameID   int64
+	username    string
+	gamesByConn map[*websocket.Conn]int64
+	connsByGame map[int64]*websocket.Conn
 }
 
-var clients = make(map[*websocket.Conn]*Client)
+var clientsByUsername = make(map[string]*Client)
 
 func main() {
 	// .env load
@@ -237,27 +237,17 @@ func UpdateGameBoard(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 }
 
 func handleWebSocket(db *sql.DB, w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+	incomingConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
-	defer conn.Close()
-
-	client := &Client{
-		conn:     conn,
-		username: "",
-		gameID:   -1,
-	}
-	if _, ok := clients[conn]; !ok {
-		clients[conn] = client
-	}
+	defer incomingConn.Close()
 
 	for {
 		// Read client message
-		_, msg, err := conn.ReadMessage()
+		_, msg, err := incomingConn.ReadMessage()
 		if err != nil {
-			delete(clients, conn)
 			break
 		}
 
@@ -267,19 +257,26 @@ func handleWebSocket(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		client, exists := clientsByUsername[message.Username]
+		if !exists {
+			client = &Client{
+				username:    message.Username,
+				connsByGame: make(map[int64]*websocket.Conn),
+				gamesByConn: make(map[*websocket.Conn]int64),
+			}
+			clientsByUsername[message.Username] = client
+		}
+
 		switch message.Type {
 		case "JoinQueue":
-			clients[conn].username = message.Username
-			client = clients[conn]
 			if client.username == "" {
-				client.conn.WriteJSON(types.WebsocketMessage{
+				incomingConn.WriteJSON(types.WebsocketMessage{
 					Type:     "error",
 					Message:  "No username found",
 					Username: "",
 					GameId:   -1})
 				return
 			}
-			database.StorePlayerWebsocketConn(db, message.Username, conn)
 
 			waitingPlayers <- client.username
 			select {
@@ -287,57 +284,65 @@ func handleWebSocket(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 				select {
 				case player2 := <-waitingPlayers:
 					if player1 != player2 {
+						clientsByUsername[player2].gamesByConn[incomingConn] = -1
+
 						game, err := database.CreateNewGame(db, player1, player2)
 						if err != nil {
 							fmt.Println("Failed to create game:", err)
 							continue
 						}
-						// Update clients with new game information (only concerned clients)
-						for _, c := range clients {
-							if c.username == player1 || c.username == player2 {
-								c.gameID = game.ID
-								c.conn.WriteJSON(types.WebsocketMessage{
-									Type:     "gameCreated",
-									Message:  "",
-									Username: "",
-									GameId:   game.ID})
+						// Update clients with new game information
+						for _, player := range []string{player1, player2} {
+							clientConnToSend, err := getClientConnWithoutGameId(clientsByUsername[player])
+							if err != nil {
+								panic(err)
 							}
+							clientsByUsername[player].gamesByConn[clientConnToSend] = game.ID
+							clientsByUsername[player].connsByGame[game.ID] = clientConnToSend
+							clientConnToSend.WriteJSON(types.WebsocketMessage{
+								Type:     "gameCreated",
+								Message:  "",
+								Username: clientsByUsername[player].username,
+								GameId:   game.ID})
 						}
+
 					} else {
 						// Can't play with oneself
 						waitingPlayers <- player1
-						client.conn.WriteJSON(types.WebsocketMessage{
+
+						incomingConn.WriteJSON(types.WebsocketMessage{
 							Type:     "waiting",
 							Message:  "Can't play with oneself",
-							Username: "",
+							Username: player1,
 							GameId:   -1})
 					}
 				default:
 					// No second player yet
 					waitingPlayers <- player1
-					client.conn.WriteJSON(types.WebsocketMessage{
+
+					clientsByUsername[player1].gamesByConn[incomingConn] = -1
+
+					incomingConn.WriteJSON(types.WebsocketMessage{
 						Type:     "waiting",
 						Message:  "",
-						Username: "",
+						Username: player1,
 						GameId:   -1})
 				}
 			default:
-				client.conn.WriteJSON(types.WebsocketMessage{
+				incomingConn.WriteJSON(types.WebsocketMessage{
 					Type:     "waiting",
 					Message:  "",
 					Username: "",
 					GameId:   -1})
 			}
 		case "ping":
-			client.conn.WriteJSON(types.WebsocketMessage{
+			incomingConn.WriteJSON(types.WebsocketMessage{
 				Type:     "message",
 				Message:  "pong",
 				Username: "",
-				GameId:   0})
+				GameId:   -1})
 		case "move":
-			database.StorePlayerWebsocketConn(db, message.Username, conn)
-
-			if message.GameId != -1 && message.GameId != 0 {
+			if message.GameId != -1 {
 				var move types.Move
 				moveData, err := json.Marshal(message)
 				if err != nil {
@@ -353,20 +358,32 @@ func handleWebSocket(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 
 				players, _ := database.GetPlayersByGameId(db, move.GameId)
 
-				// Send game to players (only concerned players)
+				// Send game to players (only concerned player for the right gameId)
 				for _, player := range players {
-					for _, client := range clients {
-						if player.WebsocketConn == client.conn.RemoteAddr().String() {
-							gameJSON, _ := json.Marshal(game)
-							client.conn.WriteJSON(types.WebsocketMessage{
-								Type:     "move",
-								Message:  string(gameJSON),
-								Username: client.username,
-								GameId:   client.gameID})
-						}
+					gameJSON, _ := json.Marshal(game)
+					conn := clientsByUsername[player.Name].connsByGame[message.GameId]
+					conn.WriteJSON(types.WebsocketMessage{
+						Type:     "move",
+						Message:  string(gameJSON),
+						Username: clientsByUsername[player.Name].username,
+						GameId:   game.ID,
+					})
+					// update clients
+					if game.Status == 2 {
+						delete(clientsByUsername[player.Name].gamesByConn, conn)
+						delete(clientsByUsername[player.Name].connsByGame, game.ID)
 					}
 				}
 			}
 		}
 	}
+}
+
+func getClientConnWithoutGameId(client *Client) (*websocket.Conn, error) {
+	for conn, gameId := range client.gamesByConn {
+		if gameId == -1 {
+			return conn, nil
+		}
+	}
+	return nil, fmt.Errorf("no connection found without a game ID")
 }

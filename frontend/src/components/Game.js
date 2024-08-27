@@ -46,7 +46,7 @@ function Game() {
                 setBoard(game['board']);
                 if (game['status'] == 2) { // Status Terminated
                     setGameOver(true);
-                    setWinner(turn)
+                    setWinner(game['turn'])
                 } else {
                     setTurn(game['turn']);
                 }

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 
 	"github.com/allanlepinay/TicTacToe/backend/types"
-	"github.com/gorilla/websocket"
 )
 
 func GetPlayerByName(db *sql.DB, player_name string) (types.Player, error) {
@@ -43,11 +42,4 @@ func GetPlayersByGameId(db *sql.DB, gameId int64) ([]types.Player, error) {
 
 	return players, nil
 
-}
-
-func StorePlayerWebsocketConn(db *sql.DB, username string, conn *websocket.Conn) {
-	_, err := db.Exec("UPDATE players SET websocket_conn = $1 WHERE name = $2", conn.RemoteAddr().String(), username)
-	if err != nil {
-		return
-	}
 }
