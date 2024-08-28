@@ -23,6 +23,12 @@ type WebsocketMessage struct {
 	GameId   int64  `json:"gameId"`
 }
 
+type PlayerProfile struct {
+	Type string `json:"type"`
+	Player
+	Games []Game `json:"games"`
+}
+
 type Player struct {
 	ID            int64  `json:"id"`
 	Name          string `json:"name"`

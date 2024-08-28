@@ -375,6 +375,19 @@ func handleWebSocket(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+		case "getPlayerProfile":
+			var playerIdMap map[string]string
+			json.Unmarshal([]byte(message.Message), &playerIdMap)
+			player, games, err := database.GetPlayerProfile(db, playerIdMap["playerId"])
+			if err != nil {
+				fmt.Println("Failed to get player profile:", err)
+				continue
+			}
+			incomingConn.WriteJSON(types.PlayerProfile{
+				Type:   "playerProfile",
+				Player: player,
+				Games:  games,
+			})
 		}
 	}
 }
